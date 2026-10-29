@@ -1,0 +1,1 @@
+{"meta":{"title":"MATLAB 实时反馈","description":"把当前 MATLAB/DPARSF/SPM QC 窗口截图与命令行窗口文本取到 Harness，直接向 Agent 提问。"},"button":{"label":"MATLAB 快照","title":"抓取当前 MATLAB 窗口截图和命令行窗口，填入输入框"}}

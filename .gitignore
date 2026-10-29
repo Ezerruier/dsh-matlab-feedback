@@ -1,0 +1,8 @@
+node_modules/
+.dsh-matlab-feedback/
+tests/host/.tmp-workspace/
+tests/host/dry-run-last.json
+tests/capture/out/
+*.log
+.DS_Store
+Thumbs.db

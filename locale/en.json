@@ -1,0 +1,1 @@
+{"meta":{"title":"MATLAB Live Feedback","description":"Bring the current MATLAB/DPARSF/SPM QC window screenshots and command-window text into Harness and ask the Agent about them."},"button":{"label":"MATLAB snapshot","title":"Capture MATLAB windows and the command window, then insert them into the draft"}}

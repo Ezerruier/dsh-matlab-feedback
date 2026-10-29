@@ -1,0 +1,49 @@
+{
+  "name": "dsh-matlab-feedback",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "DSH plugin: capture live MATLAB/DPABI/DPARSF/SPM QC window screenshots and command-window text into the Harness conversation",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "matlab",
+    "dpabi",
+    "dparsf",
+    "spm",
+    "qc",
+    "screenshot",
+    "windows"
+  ],
+  "scripts": {
+    "check": "node --check index.mjs && node --check client.js",
+    "test": "node --test tests/host/unit.test.mjs"
+  },
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.mjs",
+    "client.js",
+    "cordis.patch.yml",
+    "scripts/matlab-feedback.ps1",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": false,
+      "inject": []
+    }
+  }
+}
