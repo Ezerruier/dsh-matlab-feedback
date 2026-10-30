@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Syntax check
+        run: |
+          node --check index.mjs
+          node --check client.js
+
+      - name: Validate JSON files
+        run: |
+          node -e "const fs=require('fs'); for (const f of ['package.json','locale/en.json','locale/zh.json']) { JSON.parse(fs.readFileSync(f,'utf8')); } console.log('json ok: package.json, locale/en.json, locale/zh.json')"
+
+      - name: Unit tests
+        run: node --test tests/host/unit.test.mjs

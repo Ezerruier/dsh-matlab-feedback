@@ -1,5 +1,10 @@
 # dsh-matlab-feedback
 
+[![CI](https://github.com/Ezerruier/dsh-matlab-feedback/actions/workflows/ci.yml/badge.svg)](https://github.com/Ezerruier/dsh-matlab-feedback/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Ezerruier/dsh-matlab-feedback?display_name=tag)](https://github.com/Ezerruier/dsh-matlab-feedback/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)](https://github.com/Ezerruier/dsh-matlab-feedback)
+
 **MATLAB 实时反馈 · DeepSeek Harness 插件**
 
 把正在运行的 MATLAB 桌面（含 DPABI / DPARSF / SPM 的 QC 窗口）的**真实窗口截图**和**命令行窗口文本**直接取进 DeepSeek Harness 对话，让你可以直接问 Agent：
@@ -7,6 +12,10 @@
 > “看一下现在 DPARSF 的 QC 界面，这个配准/阈值结果有什么问题？”
 
 Agent 拿到的是真实截图 + 当前命令行输出，而不是凭记忆猜测。
+
+![架构示意图（脱敏绘制，不含真实数据）](docs/flow.png)
+
+> 示意图为流程示意，使用虚构文本绘制，不含真实受试者数据、研究数据或本地路径。
 
 ---
 
@@ -99,7 +108,7 @@ matlab_console {lines: 80} # 只取命令行尾部 80 行（更快）
 
 ## 开发与测试
 
-纯 Node（无第三方依赖），捕获脚本为 Windows PowerShell 5.1。
+纯 Node（无第三方依赖），捕获脚本为 Windows PowerShell 5.1。CI 由 GitHub Actions 执行（Node 22/24）：语法检查、JSON 校验与单元测试。
 
 ```bash
 node --check index.mjs
@@ -115,6 +124,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/capture/smoke-test.ps1
 
 ## 许可证与声明
 
-MIT License，见 [LICENSE](LICENSE)。
+MIT License，见 [LICENSE](LICENSE)。版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 本项目是社区插件，与 MathWorks、DeepSeek 均无隶属关系。MATLAB® 是 The MathWorks, Inc. 的商标；DeepSeek Harness 为 DeepSeek 的产品。使用时请自行遵守 MATLAB 许可条款与所在机构的数据管理规定。
