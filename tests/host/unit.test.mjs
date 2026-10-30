@@ -8,15 +8,21 @@ import {
   apply,
   inject,
   buildCaptureArguments,
+  buildStageArguments,
   decodePowerShellOutput,
+  formatStageText,
   normalizeManifest,
   normalizeConsoleLines,
+  normalizeStageCode,
+  parseStagePayload,
   previewText,
   pruneRunRoot,
   renderConsole,
   renderSnapshot,
+  renderStage,
   resolvePowerShellPath,
   runCapture,
+  runStageCode,
   selectImageWindows,
   tailByLines,
   tailChars,
@@ -28,6 +34,8 @@ import {
   MAX_IMAGES,
   NO_MATLAB_MESSAGE,
   SNAPSHOT_DESCRIPTION,
+  STAGE_CODE_DESCRIPTION,
+  STAGED_NOT_EXECUTED_NOTE,
   SYSTEM_PROMPT,
 } from '../../index.mjs';
 
@@ -74,13 +82,17 @@ test('exports inject = ["tools"] and the SPEC tool descriptions', () => {
     CONSOLE_DESCRIPTION,
     'Read the live MATLAB command-window text (recent SPM/DPARSF output and warnings) without screenshots. Fast alternative to matlab_snapshot when only the console matters.',
   );
+  assert.ok(STAGE_CODE_DESCRIPTION.includes('WITHOUT executing'));
+  assert.ok(STAGE_CODE_DESCRIPTION.includes('never sends Enter'));
+  assert.ok(STAGED_NOT_EXECUTED_NOTE.includes('NOT executed'));
   assert.ok(SYSTEM_PROMPT.length <= 900, `system prompt must be <= 900 chars, got ${SYSTEM_PROMPT.length}`);
+  assert.ok(SYSTEM_PROMPT.includes('matlab_stage_code'));
 });
 
-test('apply registers both tools, the prompt section and cleans up in reverse order', () => {
+test('apply registers all three tools, the prompt section and cleans up in reverse order', () => {
   const {ctx, state} = createFakeHost({workspaceRoot: 'C:\\fake-workspace'});
   const dispose = apply(ctx);
-  assert.deepEqual(state.registrationOrder, ['matlab_snapshot', 'matlab_console']);
+  assert.deepEqual(state.registrationOrder, ['matlab_snapshot', 'matlab_console', 'matlab_stage_code']);
   assert.equal(state.sections.length, 1);
   assert.equal(state.sections[0].name, 'dsh-matlab-feedback');
   assert.equal(state.sections[0].order, 9060);
@@ -95,15 +107,30 @@ test('apply registers both tools, the prompt section and cleans up in reverse or
     properties: {lines: {type: 'integer', minimum: 10, maximum: 400, description: 'Number of trailing console lines to return (default 120).'}},
     additionalProperties: false,
   });
+  const stageTool = state.registrations.get('matlab_stage_code');
+  assert.equal(stageTool.description, STAGE_CODE_DESCRIPTION);
+  assert.deepEqual(stageTool.parameters, {
+    type: 'object',
+    properties: {
+      code: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 8_000,
+        description: 'One line of MATLAB code to place in the Command Window. Newlines are rejected; the code is NOT executed.',
+      },
+    },
+    required: ['code'],
+    additionalProperties: false,
+  });
 
   dispose();
-  assert.deepEqual(state.disposed, ['section:dsh-matlab-feedback', 'tool:matlab_console', 'tool:matlab_snapshot']);
+  assert.deepEqual(state.disposed, ['section:dsh-matlab-feedback', 'tool:matlab_stage_code', 'tool:matlab_console', 'tool:matlab_snapshot']);
 });
 
 test('apply still activates when every optional service is missing', () => {
   const {ctx, state} = createFakeHost({workspaceRoot: 'C:\\fake-workspace', attachments: false, systemPrompt: false, workingDirectory: false});
   const dispose = apply(ctx);
-  assert.deepEqual(state.registrationOrder, ['matlab_snapshot', 'matlab_console']);
+  assert.deepEqual(state.registrationOrder, ['matlab_snapshot', 'matlab_console', 'matlab_stage_code']);
   assert.equal(state.sections.length, 0);
   dispose();
 });
@@ -452,4 +479,124 @@ test('pruneRunRoot keeps the newest runs and ignores deletion failures', async (
   );
   assert.equal(removed.length, 4); // 5 stale dirs, one deletion refused
   assert.ok(removed.every((full) => !/run-(2[0-4])/.test(full)));
+});
+/* ------------------------------------------------------------------ */
+/* Code staging (matlab_stage_code)                                    */
+/* ------------------------------------------------------------------ */
+
+test('normalizeStageCode accepts one line and rejects unsafe input', () => {
+  const line = "disp('hello'); x = 1;";
+  assert.equal(normalizeStageCode(line), line);
+  assert.throws(() => normalizeStageCode(''), /must not be empty/);
+  assert.throws(() => normalizeStageCode('   '), /must not be empty/);
+  assert.throws(() => normalizeStageCode(42), /must be a string/);
+  assert.throws(() => normalizeStageCode('a = 1;\nb = 2;'), /single line/);
+  assert.throws(() => normalizeStageCode('a = 1;\rb = 2;'), /single line/);
+  assert.throws(() => normalizeStageCode(`a${String.fromCharCode(0)}b`), /NUL/);
+  assert.throws(() => normalizeStageCode('x'.repeat(8_001)), /must not exceed 8000 characters/);
+});
+
+test('buildStageArguments produces the documented staging argv', () => {
+  const args = buildStageArguments({scriptPath: 'C:\\bundle\\scripts\\matlab-stage-code.ps1', code: "disp('hi')"});
+  assert.deepEqual(args, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    'C:\\bundle\\scripts\\matlab-stage-code.ps1',
+    '-Code',
+    "disp('hi')",
+  ]);
+  assert.throws(() => buildStageArguments({code: 1}), /must be a string/);
+});
+
+test('parseStagePayload reads the last JSON payload line and ignores noise', () => {
+  const stdout = 'noise line\n' + JSON.stringify({status: 'staged', draftAfter: '>> disp(1)'}) + '\n';
+  assert.equal(parseStagePayload(stdout).status, 'staged');
+  assert.equal(parseStagePayload(''), null);
+  assert.equal(parseStagePayload('not json at all'), null);
+  assert.equal(parseStagePayload('{broken json'), null);
+});
+
+test('matlab_stage_code validates arguments before spawning', async () => {
+  const {ctx, state} = createFakeHost({workspaceRoot: 'C:\\fake-workspace'});
+  apply(ctx);
+  const stageTool = state.registrations.get('matlab_stage_code');
+  await assert.rejects(stageTool.execute({unexpected: true}, fakeExec()), /unknown argument "unexpected"/);
+  await assert.rejects(stageTool.execute({code: ''}, fakeExec()), /must not be empty/);
+  await assert.rejects(stageTool.execute({code: 'a = 1\nb = 2'}, fakeExec()), /single line/);
+  await assert.rejects(stageTool.execute({code: 'x'.repeat(8_001)}, fakeExec()), /must not exceed/);
+});
+
+test('runStageCode resolves staged and never claims execution', async () => {
+  const child = createFakeChild({autoClose: null});
+  const pending = runStageCode({
+    code: "disp('hi')",
+    scriptPath: 'C:\\bundle\\scripts\\matlab-stage-code.ps1',
+    checkScript: false,
+    spawnImpl: () => child,
+    powershellPath: 'powershell.exe',
+    signal: new AbortController().signal,
+  });
+  child.stdout.write(JSON.stringify({status: 'staged', draftedAfter: '', draftAfter: '>> disp(\'hi\')'}) + '\n');
+  child.emit('close', 0, null);
+  const value = await pending;
+  assert.equal(value.status, 'staged');
+  assert.equal(value.executed, false);
+  assert.equal(value.code, "disp('hi')");
+  assert.equal(value.draftAfter, ">> disp('hi')");
+});
+
+test('runStageCode maps script statuses to stable error kinds', async () => {
+  const rejectWith = async (payload, exitCode) => {
+    const child = createFakeChild({autoClose: null});
+    const pending = runStageCode({
+      code: "disp('hi')",
+      scriptPath: 'C:\\bundle\\scripts\\matlab-stage-code.ps1',
+      checkScript: false,
+      spawnImpl: () => child,
+      powershellPath: 'powershell.exe',
+      signal: new AbortController().signal,
+    });
+    child.stdout.write(JSON.stringify(payload) + '\n');
+    child.emit('close', exitCode, 'SIGTERM');
+    return pending;
+  };
+  await assert.rejects(
+    rejectWith({status: 'draft-not-empty', message: 'Command Window already has text.'}, 5),
+    (error) => error.kind === 'DRAFT_NOT_EMPTY' && /already has text/.test(error.message),
+  );
+  await assert.rejects(
+    rejectWith({status: 'focus-failed', message: 'Could not focus the Command Window.'}, 4),
+    (error) => error.kind === 'FOCUS_FAILED' && /Could not focus/.test(error.message),
+  );
+  await assert.rejects(
+    rejectWith({status: 'paste-unverified', message: 'Paste could not be verified.'}, 6),
+    (error) => error.kind === 'PASTE_UNVERIFIED' && /could not be verified/.test(error.message),
+  );
+  await assert.rejects(
+    rejectWith({status: 'no-matlab', message: 'No running MATLAB process was found.'}, 2),
+    (error) => error.kind === 'NO_MATLAB',
+  );
+});
+
+test('runStageCode rejects with NO_SCRIPT when the staging script is missing', async () => {
+  await assert.rejects(
+    runStageCode({code: "disp('hi')", scriptPath: 'C:\\definitely-missing\\matlab-stage-code.ps1', signal: new AbortController().signal}),
+    (error) => error.kind === 'NO_SCRIPT' && /staging script is missing/.test(error.message),
+  );
+});
+
+test('formatStageText and renderStage state that the code was not executed', () => {
+  const value = {status: 'staged', executed: false, code: "disp('hi')", draftAfter: ">> disp('hi')", windowWasMinimized: true};
+  const text = formatStageText(value);
+  assert.match(text, /NOT executed/);
+  assert.match(text, /disp\('hi'\)/);
+  assert.match(text, /restored from the taskbar/);
+  assert.match(text, /press Enter themselves/);
+  const blocks = renderStage(value);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].type, 'text');
+  assert.match(blocks[0].text, /NOT executed/);
 });

@@ -1,12 +1,13 @@
 /**
  * dsh-matlab-feedback — Host half.
  *
- * Registers two agent tools that capture the *live* MATLAB desktop on this
+ * Registers three agent tools against the *live* MATLAB desktop on this
  * Windows machine (screenshots via PrintWindow + UIA text) by running the
- * bundled PowerShell capture script:
+ * bundled PowerShell scripts:
  *
- *   matlab_snapshot  → window screenshots (image attachments) + command-window text
- *   matlab_console   → command-window text only (fast)
+ *   matlab_snapshot    → window screenshots (image attachments) + command-window text
+ *   matlab_console     → command-window text only (fast)
+ *   matlab_stage_code  → place one line in the Command Window, never executes it
  *
  * The capture script (`scripts/matlab-feedback.ps1`, owned by the capture
  * implementation) writes a `manifest.json` plus `*.png` into a per-run
@@ -38,7 +39,15 @@ export const SNAPSHOT_DESCRIPTION = 'Capture the live MATLAB session on this Win
 
 export const CONSOLE_DESCRIPTION = 'Read the live MATLAB command-window text (recent SPM/DPARSF output and warnings) without screenshots. Fast alternative to matlab_snapshot when only the console matters.';
 
-export const SYSTEM_PROMPT = 'MATLAB 实时反馈：当用户询问 MATLAB、DPARSF/DPABI、SPM 当前显示什么、QC 结果、配准/分割质量、命令行报错或警告时，先调用 matlab_snapshot 抓取真实窗口截图与命令行窗口文本（或 matlab_console 只取命令行、更快），再基于返回内容回答；不要凭记忆或猜测描述 MATLAB 状态。图像只作定性观察（界面、脑图、评分选项），精确数值与报错文本以命令行窗口和控件文本为准；文本被截断或图像不清时要说明限制。捕获是只读操作，不改变用户 MATLAB 窗口状态；若返回没有运行中的 MATLAB，请让用户打开 MATLAB/DPARSF 后重试。';
+export const STAGE_SCRIPT_PATH = fileURLToPath(new URL('./scripts/matlab-stage-code.ps1', import.meta.url));
+export const STAGE_TIMEOUT_MS = 20_000;
+export const MAX_STAGE_CODE_CHARS = 8_000;
+
+export const STAGE_CODE_DESCRIPTION = 'Stage one line of MATLAB code in the already-open MATLAB Command Window WITHOUT executing it. The user reviews the line in MATLAB and presses Enter themselves. Multi-line code is rejected because multi-line paste could run code. The tool brings MATLAB to the front and never sends Enter.';
+
+export const STAGED_NOT_EXECUTED_NOTE = 'The line is staged in MATLAB and NOT executed. Ask the user to review it in MATLAB and press Enter themselves (Esc discards it), then report the result.';
+
+export const SYSTEM_PROMPT = 'MATLAB 实时反馈：当用户询问 MATLAB、DPARSF/DPABI、SPM 当前显示什么、QC 结果、配准/分割质量、命令行报错或警告时，先调用 matlab_snapshot 抓取真实窗口截图与命令行窗口文本（或 matlab_console 只取命令行、更快），再基于返回内容回答；不要凭记忆或猜测描述 MATLAB 状态。图像只作定性观察（界面、脑图、评分选项），精确数值与报错文本以命令行窗口和控件文本为准；文本被截断或图像不清时要说明限制。捕获是只读操作，不改变用户 MATLAB 窗口状态；若返回没有运行中的 MATLAB，请让用户打开 MATLAB/DPARSF 后重试。若用户明确要求在其 MATLAB 里运行代码：只能用 matlab_stage_code 把单行代码写入命令窗口（绝不自动回车，执行由用户手动确认），然后请用户按 Enter 并告知结果，再用 matlab_snapshot 或 matlab_console 读取结果；不得声称代码已经执行。';
 
 const ROLE_RANK = Object.freeze({'qc-figure': 0, 'pipeline-gui': 1, figure: 2, desktop: 3, other: 4});
 const TEXT_SOURCES = new Set(['uia-document', 'uia-commandwindow', 'none']);
@@ -194,6 +203,194 @@ export function buildCaptureArguments({scriptPath = CAPTURE_SCRIPT_PATH, outDir,
 }
 
 /**
+ * Validate one staged MATLAB code line. Multi-line input is rejected on
+ * purpose: pasting multiple lines into the Command Window can execute code.
+ */
+export function normalizeStageCode(code) {
+  if (typeof code !== 'string') throw new Error('matlab_stage_code: "code" must be a string.');
+  if (code.trim().length === 0) throw new Error('matlab_stage_code: "code" must not be empty.');
+  if (code.length > MAX_STAGE_CODE_CHARS) throw new Error(`matlab_stage_code: "code" must not exceed ${MAX_STAGE_CODE_CHARS} characters.`);
+  if (code.includes('\r') || code.includes('\n')) throw new Error('matlab_stage_code: "code" must be a single line; multi-line paste could execute code.');
+  if (code.includes('\u0000')) throw new Error('matlab_stage_code: "code" must not contain NUL characters.');
+  return code;
+}
+
+/** Build the exact argv handed to powershell.exe for staging. */
+export function buildStageArguments({scriptPath = STAGE_SCRIPT_PATH, code} = {}) {
+  if (typeof code !== 'string') throw new Error('matlab_stage_code: "code" must be a string.');
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    scriptPath,
+    '-Code',
+    code,
+  ];
+}
+
+/** Parse the last JSON payload line emitted by the staging script. */
+export function parseStagePayload(stdout) {
+  const lines = (typeof stdout === 'string' ? stdout : '').split(/\r?\n/).reverse();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const value = JSON.parse(trimmed);
+      if (value && typeof value === 'object' && typeof value.status === 'string') return value;
+    } catch {
+      /* keep scanning earlier lines */
+    }
+  }
+  return null;
+}
+
+function stageFailure(payload, exitCode, stderr) {
+  const status = payload?.status ?? 'failed';
+  const detail = typeof payload?.message === 'string' && payload.message.length > 0 ? payload.message : '';
+  const tail = typeof stderr === 'string' && stderr.trim().length > 0 ? ` stderr: ${stderr.trim().slice(-500)}` : '';
+  const kind = status.toUpperCase().replace(/-/g, '_');
+  if (status === 'no-matlab' || status === 'no-matlab-window' || status === 'draft-not-empty' || status === 'paste-unverified' || status === 'foreground-failed' || status === 'focus-failed' || status === 'invalid-code') {
+    return new CaptureError(detail, kind);
+  }
+  return new CaptureError(`MATLAB staging failed (exit code ${exitCode}).${detail ? ' ' + detail : ''}${tail}`, kind);
+}
+
+/**
+ * Stage one MATLAB code line in the open Command Window. Never executes it.
+ * Rejects with a CaptureError carrying a stable `kind` on every failure path.
+ */
+export function runStageCode({
+  code,
+  scriptPath = STAGE_SCRIPT_PATH,
+  timeoutMs = STAGE_TIMEOUT_MS,
+  signal,
+  spawnImpl = spawn,
+  powershellPath = resolvePowerShellPath(),
+  checkScript = true,
+} = {}) {
+  const args = buildStageArguments({scriptPath, code});
+  if (checkScript && !existsSync(scriptPath)) {
+    return Promise.reject(new CaptureError(`The MATLAB staging script is missing: ${scriptPath}. The dsh-matlab-feedback bundle is incomplete; reinstall it.`, 'NO_SCRIPT'));
+  }
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawnImpl(powershellPath, args, {windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']});
+    } catch (error) {
+      reject(new CaptureError(`Unable to start the MATLAB staging script (${powershellPath}): ${error.message}`, 'SPAWN', {cause: error}));
+      return;
+    }
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let settled = false;
+    let timedOut = false;
+    let timer = null;
+    let killTimer = null;
+    const finish = (settle, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (killTimer !== null) clearTimeout(killTimer);
+      try {
+        signal?.removeEventListener?.('abort', onAbort);
+      } catch {
+        /* ignore */
+      }
+      settle(value);
+    };
+    const onAbort = () => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (signal) {
+      if (signal.aborted) {
+        finish(reject, abortReason(signal));
+        return;
+      }
+      try {
+        signal.addEventListener('abort', onAbort, {once: true});
+      } catch {
+        /* ignore */
+      }
+    }
+    timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+      }, 2_000);
+      killTimer.unref?.();
+    }, timeoutMs);
+    const onChunk = (target) => (chunk) => {
+      const list = target === 'stdout' ? stdoutChunks : stderrChunks;
+      if (list.length >= 512) return;
+      list.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(typeof chunk === 'string' ? chunk : String(chunk)));
+    };
+    child.stdout?.on('data', onChunk('stdout'));
+    child.stderr?.on('data', onChunk('stderr'));
+    child.once('error', (error) => {
+      finish(reject, new CaptureError(`Unable to start the MATLAB staging script (${powershellPath}): ${error.message}`, 'SPAWN', {cause: error}));
+    });
+    child.once('close', (exitCode) => {
+      const stdout = decodePowerShellOutput(Buffer.concat(stdoutChunks));
+      const stderr = decodePowerShellOutput(Buffer.concat(stderrChunks));
+      if (timedOut) {
+        finish(reject, new CaptureError(`MATLAB staging timed out after ${timeoutMs} ms. The code may not be staged; check MATLAB before retrying.`, 'TIMEOUT'));
+        return;
+      }
+      if (signal?.aborted) {
+        finish(reject, abortReason(signal));
+        return;
+      }
+      const payload = parseStagePayload(stdout);
+      if (exitCode === 0 && payload?.status === 'staged') {
+        finish(resolve, {
+          kind: 'dsh-matlab-feedback',
+          mode: 'stage',
+          status: 'staged',
+          executed: false,
+          code,
+          codeLength: code.length,
+          draftAfter: typeof payload.draftAfter === 'string' ? payload.draftAfter : '',
+          windowWasMinimized: payload.windowWasMinimized === true,
+        });
+        return;
+      }
+      finish(reject, stageFailure(payload, exitCode, stderr));
+    });
+  });
+}
+
+/** Text block for matlab_stage_code. */
+export function formatStageText(value) {
+  const lines = [
+    'MATLAB code staged in the Command Window — NOT executed.',
+    `Line: ${value.code}`,
+  ];
+  if (value.windowWasMinimized) lines.push('The MATLAB window was restored from the taskbar so you can review it.');
+  lines.push(STAGED_NOT_EXECUTED_NOTE);
+  return lines.join('\n');
+}
+
+/** Content blocks for matlab_stage_code. */
+export function renderStage(value) {
+  return [{type: 'text', text: formatStageText(value)}];
+}
+
+/**
  * Run the PowerShell capture script and resolve with its captured output.
  * Rejects with a CaptureError carrying a stable `kind` on timeout, abort,
  * spawn failure, exit code 2 (no MATLAB) or any other non-zero exit.
@@ -290,9 +487,7 @@ export function runCapture({
       }, 2_000);
       killTimer.unref?.();
     }, timeoutMs);
-    // Keep the timeout timer referenced: while a capture is in flight the process
-    // must stay alive long enough to observably time out (Node 22 test runners
-    // otherwise drain the event loop and cancel the pending promise).
+    // Keep the timeout timer referenced so a pending capture stays observable.
     child.stdout?.on('data', onChunk('stdout'));
     child.stderr?.on('data', onChunk('stderr'));
     child.once('error', (error) => {
@@ -793,6 +988,12 @@ async function executeConsole(ctx, exec, args) {
   };
 }
 
+async function executeStageCode(ctx, exec, args) {
+  const code = normalizeStageCode(args?.code);
+  throwIfAborted(exec);
+  return runStageCode({code, signal: exec?.signal});
+}
+
 /* ------------------------------------------------------------------ */
 /* Plugin entry                                                        */
 /* ------------------------------------------------------------------ */
@@ -830,6 +1031,28 @@ export function apply(ctx) {
       async execute(args, exec) {
         const value = assertArguments(args, ['lines'], 'matlab_console');
         return executeConsole(ctx, exec, value);
+      },
+    });
+    registerTool({
+      name: 'matlab_stage_code',
+      description: STAGE_CODE_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          code: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 8_000,
+            description: 'One line of MATLAB code to place in the Command Window. Newlines are rejected; the code is NOT executed.',
+          },
+        },
+        required: ['code'],
+        additionalProperties: false,
+      },
+      output: output(renderStage),
+      async execute(args, exec) {
+        const value = assertArguments(args, ['code'], 'matlab_stage_code');
+        return executeStageCode(ctx, exec, value);
       },
     });
     const systemPrompt = getService(ctx, 'systemPrompt');

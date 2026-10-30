@@ -11,7 +11,7 @@
 
 > “看一下现在 DPARSF 的 QC 界面，这个配准/阈值结果有什么问题？”
 
-Agent 拿到的是真实截图 + 当前命令行输出，而不是凭记忆猜测。
+Agent 拿到的是真实截图 + 当前命令行输出，而不是凭记忆猜测。需要让它写 MATLAB 代码时，它可以把**单行代码**放进命令窗口但**不会执行**——由你检查后手动按 Enter（Esc 丢弃）。
 
 ![架构示意图（脱敏绘制，不含真实数据）](docs/flow.png)
 
@@ -25,6 +25,7 @@ Agent 拿到的是真实截图 + 当前命令行输出，而不是凭记忆猜�
 | --- | --- |
 | `matlab_snapshot` 工具 | 抓取所有可见 MATLAB 窗口：截图作为**图片附件**内嵌在工具结果中，同时返回窗口清单、命令行窗口文本（尾部）、警告/错误摘要 |
 | `matlab_console` 工具 | 只读命令行窗口文本，参数 `lines`（10–400，默认 120）；不截图、更快 |
+| `matlab_stage_code` 工具 | 把**单行** MATLAB 代码写入已打开的 Command Window（绝不自动回车）；你检查后自行按 Enter 执行，Esc 丢弃 |
 | 输入框按钮 | 聊天输入框左侧的「MATLAB 快照」按钮：点击后向输入框插入一条预置提示词，补充问题后发送即可 |
 | 捕获引擎 | `scripts/matlab-feedback.ps1`（Windows PowerShell 5.1）：Windows UI Automation 读取 CEF 桌面/图窗文本，`PrintWindow` 截图，输出 `manifest.json` + PNG |
 | 只读、无侵入 | 不点击、不键入、不抢焦点、不移动/恢复窗口、不修改 MATLAB/SPM/DPABI 数据，也不安装任何 MATLAB 侧代码 |
@@ -45,6 +46,8 @@ Host 半侧 (index.mjs)：创建 run 目录 → spawn PowerShell 捕获脚本 �
         │                                   │
         ▼                                   ▼
 attachments.saveImage → 工具结果内嵌图片块   <workspace>/.dsh-matlab-feedback/<runId>/
+
+matlab_stage_code ── 剪贴板 + Ctrl+V → 命令窗口输入行（不发送 Enter，执行由你手动确认）
         │
         ▼
 Client 半侧 (client.js)：输入框「MATLAB 快照」按钮 → inputActions.insertText 预置提示词
@@ -63,7 +66,7 @@ Client 半侧 (client.js)：输入框「MATLAB 快照」按钮 → inputActions.
 1. 使用 DSH 的插件管理器安装本目录（`plugin_manager` 的 `install_bundle`，target 指向本目录绝对路径）；
 2. 手动复制到 profile 并加入 `package.json` 的 `dsh.profile.bundles`（不推荐）。
 
-安装后无需重启：工具 `matlab_snapshot` / `matlab_console` 出现在 Agent 工具表，输入框左侧出现「MATLAB 快照」按钮。若页面未刷新出按钮，刷新一次页面。
+安装后无需重启：工具 `matlab_snapshot` / `matlab_console` / `matlab_stage_code` 出现在 Agent 工具表，输入框左侧出现「MATLAB 快照」按钮。若页面未刷新出按钮，刷新一次页面。
 
 ## 使用
 
@@ -72,6 +75,7 @@ Client 半侧 (client.js)：输入框「MATLAB 快照」按钮 → inputActions.
 ```text
 matlab_snapshot            # 截图 + 命令行 + warnings（0.3–3 秒，取决于 MATLAB 负载）
 matlab_console {lines: 80} # 只取命令行尾部 80 行（更快）
+matlab_stage_code {code: "disp('hi')"}  # 只写入命令框、不执行；你手动按 Enter
 ```
 
 `matlab_snapshot` 返回内容：
@@ -89,10 +93,21 @@ matlab_console {lines: 80} # 只取命令行尾部 80 行（更快）
 
 补充你的问题后回车发送即可。
 
+### 让 Agent 写代码（可选执行）
+
+当你说“把这段代码写到 MATLAB 里”或“帮我在命令窗口设置 xxx”，Agent 会调用 `matlab_stage_code` 把**单行**代码写入命令窗口：
+
+1. MATLAB 窗口会切到前台，命令窗口里出现待执行的代码；
+2. 你检查无误后按 **Enter** 执行（按 **Esc** 丢弃）；
+3. 执行完让 Agent 抓取结果（它会用 `matlab_snapshot` / `matlab_console` 读取命令行输出）。
+
+工具本身**从不执行代码**，也**不接受多行代码**（多行粘贴可能被 MATLAB 执行）。
+
 ## 安全与隐私
 
 - **只读捕获**：只做窗口枚举、`PrintWindow` 截图和 UI Automation 文本读取；不点击、不键入、不切换焦点、不移动/恢复/关闭窗口、不终止 MATLAB 进程。
 - **不联网**：插件自身不发起任何网络请求；截图/文本只写入本机磁盘与当前 Harness 会话。
+- **代码暂存不执行**：`matlab_stage_code` 只把单行代码粘贴进命令窗口，从不发送 Enter/Return，并拒绝多行输入（防止多行粘贴被执行）；它会短暂把 MATLAB 窗口切到前台以便你检查。是否执行完全由你决定。
 - 截图包含窗口当前显示的像素，**可能含研究数据、受试者编号、本地路径**；命令行文本也可能含路径与报错。它们会作为工具结果进入当前会话，并随模型请求发送给所配置的模型服务商——分享会话记录或截图前请自行评估敏感性。
 - 每次捕获在工作区 `.dsh-matlab-feedback/<runId>/` 下写 `manifest.json` 与 `w-*.png`；历史 run 目录最多保留 20 个，旧的自动清理。
 
@@ -105,6 +120,8 @@ matlab_console {lines: 80} # 只取命令行尾部 80 行（更快）
 - 个别超链接文本会被 UI Automation 拼出 `link … out of link` 之类的装饰噪声，不影响信息本身。
 - 单个窗口截图失败不会导致整次捕获失败（该窗口 `screenshot: null`）。
 - 若当前会话没有 attachments 服务，工具降级为纯文本并给出 PNG 绝对路径，Agent 可用 `read_image` 读取。
+- `matlab_stage_code` 需要能把 MATLAB 主窗口切到前台；若命令窗口已有未执行文本（会混入你的输入）或无法聚焦，会拒绝写入并提示你清理后重试。
+- 本机 Windows COM（`MATLAB.Application`）未注册，且 COM 无法连接已打开的桌面会话，因此不提供 COM 通道；暂存通过键盘级剪贴板粘贴实现。
 
 ## 开发与测试
 
@@ -113,7 +130,7 @@ matlab_console {lines: 80} # 只取命令行尾部 80 行（更快）
 ```bash
 node --check index.mjs
 node --check client.js
-node --test tests/host/unit.test.mjs      # 27 个 fixture 单测，不需要 MATLAB
+node --test tests/host/unit.test.mjs      # 35 个 fixture 单测，不需要 MATLAB
 node tests/host/dry-run.mjs               # 真实 MATLAB 端到端 dry-run（需要 MATLAB 已打开）
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/capture/smoke-test.ps1
 ```

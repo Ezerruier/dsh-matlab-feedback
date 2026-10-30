@@ -128,3 +128,40 @@ consoleText, consoleTruncated, warnings, images[{title,path,attachment}], attach
 - UIA 是启发式拼接：个别超链接文本会产生 `link … out of link` 装饰噪声；MATLAB 自身对超长行截断。
 - 最小化窗口不截图（避免打扰），但仍尽量读文本。
 - 截图像素包含屏幕内容，隐私边界见 README。
+
+## 9. 代码暂存（`matlab_stage_code`，可选执行）
+
+默认行为是只读；只有当用户明确要求“把代码写进 MATLAB”时，Agent 才调用
+`matlab_stage_code`，把**单行代码**放进已打开的命令窗口输入行，但**不执行**。
+
+### 通道选择与验证结论
+
+- **Windows COM（`MATLAB.Application`）不适用**：本机注册表没有该 ProgID；
+  即使注册，COM Automation 也无法附着到用户已打开的交互式桌面会话（它会启动
+  独立的自动化实例），并且 `Execute()` 是立即执行，违背“用户手动确认执行”。
+- **MATLAB Engine（`matlab.engine.shareEngine`）** 需要用户在 MATLAB 中执行共享命令，
+  且同样是立即执行，不满足“只写入、不执行”。
+- 实际采用的通道：**剪贴板 + 键盘级 Ctrl+V 粘贴到已聚焦的 Command Window 输入行**，
+  全程不发送 Enter/Return：
+  1. 找到 `MATLAB R20xx` 主窗口，必要时从任务栏恢复并 `SetForegroundWindow`；
+  2. 发送 Ctrl+0（MATLAB 的 Command Window 快捷键），通过 UI Automation 的
+     `FocusedElement` 校验焦点确实落在 `commandWindowWrapper` 子树内；
+  3. 读取 `keyCapture` Edit 的 `ValuePattern`，若提示符后已有未执行文本则拒绝，
+     避免与用户正在输入的内容混合；
+  4. 将代码放入剪贴板并发送 Ctrl+V，再读回 `keyCapture` 值确认代码已出现在输入行；
+  5. 输出机器可读 JSON 状态（`staged` / `draft-not-empty` / `focus-failed` /
+     `paste-unverified` / `no-matlab` 等），Host 将其映射为稳定错误类型。
+
+### 安全约束（脚本与 Host 双重校验）
+
+- 拒绝空串、多行（`\r`/`\n`）、NUL、超过 8000 字符的输入；多行粘贴可能被
+  MATLAB 逐行执行，因此明确拒绝而不是尝试拼接；
+- 从不发送 Enter/Return；工具结果固定写明 “NOT executed”，提示用户按 Enter 或 Esc；
+- 焦点校验失败或粘贴校验失败时不重试粘贴，避免把代码误输入到其它窗口；
+- 用户手动执行后，Agent 再用 `matlab_snapshot` / `matlab_console` 读取结果。
+
+### 已知取舍
+
+- Ctrl+0 与焦点校验依赖 MATLAB 桌面快捷键和 CEF 的 UI Automation 行为；若用户
+  自定义了快捷键、命令窗口被关闭或窗口状态异常，会以 `focus-failed` 拒绝。
+- 暂存时会把 MATLAB 窗口切到前台；这是为了让用户立即检查并决定是否执行。

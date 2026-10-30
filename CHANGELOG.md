@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-30
+
+### Added
+
+- `matlab_stage_code` Agent tool: writes **one line** of MATLAB code into the
+  already-open Command Window and **never executes it** — the user reviews the
+  line in MATLAB and presses Enter themselves (Esc discards it).
+  - Focus is taken via MATLAB's Ctrl+0 shortcut and verified through UI
+    Automation before any paste; the code is inserted with clipboard + Ctrl+V.
+  - Safe by construction: empty/multi-line/oversized/NUL input is rejected,
+    no Enter/Return key is ever sent, and staged input is read back from the
+    command input element for verification.
+  - Refuses to stage when the Command Window already contains unexecuted text,
+    or when the window cannot be focused, instead of pasting blindly.
+- `scripts/matlab-stage-code.ps1` (Windows PowerShell 5.1, ASCII-only) with
+  machine-readable JSON statuses (`staged`, `draft-not-empty`, `focus-failed`,
+  `paste-unverified`, `no-matlab`, ...).
+- Nine new Host unit tests (35 total) covering staging validation, argv,
+  payload parsing, status-to-error mapping and rendering.
+- README/DESIGN sections explaining why Windows COM (`MATLAB.Application`) is
+  not usable for this workflow and documenting the verified keyboard-level
+  staging channel.
+
+### Changed
+
+- Plugin version bumped to 0.2.0; `files` now ships both PowerShell scripts.
+- README feature table, architecture sketch, safety guarantees and limitations
+  updated for the staged-execution workflow.
+
 ## [0.1.0] - 2026-10-30
 
 ### Added

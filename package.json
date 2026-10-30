@@ -1,10 +1,10 @@
 {
   "name": "dsh-matlab-feedback",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "DSH plugin: capture live MATLAB/DPABI/DPARSF/SPM QC window screenshots and command-window text into the Harness conversation",
+  "description": "DSH plugin: capture live MATLAB/DPABI/DPARSF/SPM QC window screenshots, command-window text and single-line code staging into the Harness conversation",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
@@ -32,6 +32,7 @@
     "client.js",
     "cordis.patch.yml",
     "scripts/matlab-feedback.ps1",
+    "scripts/matlab-stage-code.ps1",
     "locale/*.json",
     "icon.svg",
     "README.md"

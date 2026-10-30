@@ -179,6 +179,7 @@ def main() -> None:
         text(dr, (px[1] + 150, y + 20), desc, F_SMALL, MUTED, "lm")
     text(dr, (px[1] + 24, py + 520), "零第三方依赖 · 不联网 · 单次捕获通常 < 1 秒", F_SMALL, MUTED)
     text(dr, (px[1] + 24, py + 548), "无 attachments 时降级为 PNG 路径 + read_image", F_SMALL, MUTED)
+    text(dr, (px[1] + 24, py + 576), "matlab_stage_code：写入命令框但不按 Enter（可选）", F_SMALL, ORANGE)
 
     # ---- Panel 3: Harness chat ----
     panel(dr, [px[2], py, px[2] + pw, py + ph])
