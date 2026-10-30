@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
+import path from 'node:path';
 
 import {
   apply,
@@ -153,10 +154,10 @@ test('buildCaptureArguments produces the documented PowerShell 5.1 argv', () => 
 });
 
 test('resolvePowerShellPath prefers System32 and falls back to PATH', () => {
-  assert.equal(
-    resolvePowerShellPath({systemRoot: 'C:\\Windows', exists: () => true}),
-    'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-  );
+  // path.join keeps the assertion portable: this helper is Windows-only, but the
+  // unit tests also run on Linux in CI.
+  const expected = path.join('C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  assert.equal(resolvePowerShellPath({systemRoot: 'C:\\Windows', exists: () => true}), expected);
   assert.equal(resolvePowerShellPath({systemRoot: 'C:\\Windows', exists: () => false}), 'powershell.exe');
   assert.equal(resolvePowerShellPath({systemRoot: '', exists: () => true}), 'powershell.exe');
 });
@@ -433,7 +434,9 @@ test('formatConsoleText reports missing UIA text without throwing', () => {
 
 test('pruneRunRoot keeps the newest runs and ignores deletion failures', async () => {
   const entries = Array.from({length: 25}, (_, index) => ({name: `run-${String(index).padStart(2, '0')}`, isDirectory: () => true}));
-  const mtimes = new Map(entries.map((entry, index) => [`C:\\runs\\${entry.name}`, index]));
+  // Key by the same path.join() the implementation uses so the fake mtimes bind
+  // on every platform (path separators differ on Linux CI).
+  const mtimes = new Map(entries.map((entry, index) => [path.join('C:\\runs', entry.name), index]));
   const removed = [];
   await pruneRunRoot(
     'C:\\runs',
