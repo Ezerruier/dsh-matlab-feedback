@@ -290,7 +290,9 @@ export function runCapture({
       }, 2_000);
       killTimer.unref?.();
     }, timeoutMs);
-    timer.unref?.();
+    // Keep the timeout timer referenced: while a capture is in flight the process
+    // must stay alive long enough to observably time out (Node 22 test runners
+    // otherwise drain the event loop and cancel the pending promise).
     child.stdout?.on('data', onChunk('stdout'));
     child.stderr?.on('data', onChunk('stderr'));
     child.once('error', (error) => {
